@@ -38,7 +38,7 @@
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/picsecure.git
+    git clone https://github.com/Kevin8160/picsecure.git
     cd picsecure
     ```
 
