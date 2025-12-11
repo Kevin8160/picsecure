@@ -29,10 +29,10 @@
 
 ### Prerequisites
 
-- [Flutter SDK](https://docs.flutter.dev/get-started/install) (version 3.9.0 or higher)
-- [Dart SDK](https://dart.dev/get-dart)
-- Android Studio / VS Code with Flutter extensions
-- Cocoapods (for iOS)
+        Flutter 3.35.1 • channel stable • https://github.com/flutter/flutter.git
+        Framework • revision 20f8274939 (4 months ago) • 2025-08-14 10:53:09 -0700
+        Engine • hash 6cd51c08a88e7bbe848a762c20ad3ecb8b063c0e (revision 1e9a811bf8) (3 months ago) • 2025-08-13 23:35:25.000Z
+        Tools • Dart 3.9.0 • DevTools 2.48.0
 
 ### Installation
 
