@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "78855412942",
+    "project_id": "pic-91871",
+    "storage_bucket": "pic-91871.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:78855412942:android:c360b0eee2853d0d7ac49f",
+        "android_client_info": {
+          "package_name": "com.example.picsecure"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBpk8EBUBrQX2jSwO9vkMkQdPHL-ZtKPKk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
