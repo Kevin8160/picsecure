@@ -53,5 +53,17 @@
 	<string>We need access to contacts to find your friends.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+        <array>
+            <dict>
+                <key>CFBundleTypeRole</key>
+                <string>Editor</string>
+                <key>CFBundleURLSchemes</key>
+                <array>
+                    <!-- REPLACE this value with REVERSED_CLIENT_ID from GoogleService-Info.plist -->
+                    <string>com.googleusercontent.apps.78855412942-be3fvn5e222rr14fu3lfkgaadhhn3g5g</string>
+                </array>
+            </dict>
+        </array>
 </dict>
 </plist>
