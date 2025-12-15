@@ -253,13 +253,6 @@ class _SuggestionsViewState extends State<SuggestionsView> {
             const ReceivedPhotosView(),
           ],
         ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: () {
-            // Get.toNamed('/upload', arguments: selectedPhotos);
-          },
-          label: const Text("Secure Upload"),
-          icon: const Icon(Icons.lock),
-        ),
       ),
     );
   }

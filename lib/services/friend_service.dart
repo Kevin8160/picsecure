@@ -47,9 +47,8 @@ class FriendService {
     final existingFriends = await getConfirmedFriends();
     final existingUids = existingFriends.map((f) => f['uid']).toSet();
 
-    List<Map<String, dynamic>> matches = [];
+    // Compare
 
-    // Pre-calculate/cache user embeddings
     List<Map<String, dynamic>> candidates = [];
     for (var doc in allUsersSnap.docs) {
       final data = doc.data();
@@ -62,20 +61,47 @@ class FriendService {
       }
     }
 
-    // Compare
-    // Relaxed Threshold for Search (Selfie vs Random Gallery Photo)
-    // 0.95 might be too strict for cross-context matching.
-    const double THRESHOLD = 1.25;
+    return _matchCandidatesWithClusters(candidates, localClusters);
+  }
 
-    print("DEBUG: Starting Face Search...");
-    print(
-      "DEBUG: Candidates (server users with public face): ${candidates.length}",
-    );
-    print("DEBUG: Local Clusters: ${localClusters.length}");
+  /// 1c. Stream of Find Friends by Scanning Gallery Faces
+  /// Continuously listens for NEW users and compares against local clusters.
+  Stream<List<Map<String, dynamic>>> findFriendsStream(
+    List<dynamic> localClusters,
+  ) {
+    return _firestore.collection('users').snapshots().asyncMap((
+      userSnapshot,
+    ) async {
+      final myUid = _auth.currentUser?.uid;
+      final existingFriends = await getConfirmedFriends();
+      final existingUids = existingFriends.map((f) => f['uid']).toSet();
+
+      List<Map<String, dynamic>> candidates = [];
+      for (var doc in userSnapshot.docs) {
+        final data = doc.data();
+        if (doc.id == myUid) continue;
+        if (existingUids.contains(doc.id)) continue;
+
+        final publicEmb = data['publicEmbedding'];
+        if (publicEmb != null && publicEmb is List) {
+          candidates.add({'data': data, 'embedding': publicEmb.cast<double>()});
+        }
+      }
+
+      return _matchCandidatesWithClusters(candidates, localClusters);
+    });
+  }
+
+  List<Map<String, dynamic>> _matchCandidatesWithClusters(
+    List<Map<String, dynamic>> candidates,
+    List<dynamic> localClusters,
+  ) {
+    List<Map<String, dynamic>> matches = [];
+    // Relaxed Threshold for Search (Selfie vs Random Gallery Photo)
+    const double THRESHOLD = 1.25;
 
     for (var cluster in localClusters) {
       // accessing dynamic properties - be careful or import FaceCluster
-      // Assuming passed arg is List<FaceCluster> from face_clustering_service.dart
       final clusterEmbedding =
           cluster.representativeFace.embedding as List<double>;
 
@@ -83,24 +109,16 @@ class FriendService {
         final candidateEmb = candidate['embedding'] as List<double>;
         final dist = _euclideanDistance(clusterEmbedding, candidateEmb);
 
-        print(
-          "DEBUG: Distance between Cluster '${cluster.label}' and User '${candidate['data']['phone']}': $dist",
-        );
-
         if (dist < THRESHOLD) {
-          print("DEBUG: MATCH FOUND!");
           matches.add({
             'user': candidate['data'],
-            'cluster': cluster, // Pass back the whole cluster object
+            'cluster': cluster,
             'distance': dist,
           });
-          // Break candidate loop? No, one candidate might match multiple clusters (unlikely if clustered well)
-          // Break cluster loop? One cluster matches one user? Yes, ideally.
-          break;
+          break; // One match per cluster is enough for now
         }
       }
     }
-
     return matches;
   }
 
@@ -162,6 +180,21 @@ class FriendService {
     return snapshot.docs.map((d) => {...d.data(), 'id': d.id}).toList();
   }
 
+  /// 3b. Stream of Incoming Requests
+  Stream<List<Map<String, dynamic>>> getIncomingRequestsStream() {
+    final user = _auth.currentUser;
+    if (user == null) return Stream.value([]);
+
+    return _firestore
+        .collection('friendships')
+        .where('userB', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .map((snapshot) {
+          return snapshot.docs.map((d) => {...d.data(), 'id': d.id}).toList();
+        });
+  }
+
   /// 3.5. Get Confirmed Friends (Local Hive + Firestore fetch for info)
   Future<List<Map<String, dynamic>>> getConfirmedFriends() async {
     if (_friendsBox == null) return [];
@@ -170,10 +203,6 @@ class FriendService {
     if (friendUids.isEmpty) return [];
 
     // Fetch details for display (e.g. Phone)
-    // Firestore 'in' limit is 10. For MVP assuming < 10 friends, else loop.
-    // Ideally we store name/phone in Hive too, but we only stored embedding.
-    // Let's fetch freshly.
-
     List<Map<String, dynamic>> friends = [];
     for (var i = 0; i < friendUids.length; i += 10) {
       final chunk = friendUids.sublist(
@@ -187,6 +216,30 @@ class FriendService {
       friends.addAll(snapshot.docs.map((d) => d.data()));
     }
     return friends;
+  }
+
+  /// 3.5b Stream of Confirmed Friends (Based mostly on Hive/Local state updates - tricky, sticking to Future or manual refresh usually best for Hive.
+  /// BUT, we can stream the friendships collection where I am A or B and status is 'accepted' to detect NEW friendships)
+  /// Actually, simpliest for "Connections" tab is to verify if *I* have accepted them (stored in Hive).
+  /// Let's stream the `friendships` collection where status='accepted' AND (userA=me OR userB=me).
+  /// Then valid ones are those where I have the face.
+  Stream<List<Map<String, dynamic>>> getFriendsStream() {
+    final user = _auth.currentUser;
+    if (user == null) return Stream.value([]);
+
+    // We listen to where I added someone and they validated it.
+    // This covers the "Friend Accept" case the user cares about.
+    return _firestore
+        .collection('friendships')
+        .where('userA', isEqualTo: user.uid)
+        .where('status', isEqualTo: 'accepted')
+        .snapshots()
+        .asyncMap((snapshot) async {
+          // If any doc changes here, it means someone I requested has accepted.
+          // We should trigger a sync to update Hive.
+          await checkOutgoingStatus();
+          return await getConfirmedFriends();
+        });
   }
 
   /// 4. Accept Request (Handshake Step 2)

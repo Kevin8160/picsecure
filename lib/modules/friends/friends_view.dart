@@ -18,7 +18,6 @@ class _FriendsViewState extends State<FriendsView>
   late TabController _tabController;
 
   List<Map<String, dynamic>> _foundFriends = []; // Result of face scan
-  List<Map<String, dynamic>> _incomingRequests = [];
 
   bool _isLoading = false;
   String _statusMessage = "";
@@ -28,7 +27,7 @@ class _FriendsViewState extends State<FriendsView>
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _checkOutgoing();
-    _fetchRequests();
+    // Requests are now handled by StreamBuilder
 
     // Auto-scan if clusters provided
     if (widget.clusters.isNotEmpty) {
@@ -39,13 +38,6 @@ class _FriendsViewState extends State<FriendsView>
   void _checkOutgoing() {
     // Check if my friends accepted me
     _friendService.checkOutgoingStatus();
-  }
-
-  Future<void> _fetchRequests() async {
-    final requests = await _friendService.getIncomingRequests();
-    setState(() {
-      _incomingRequests = requests;
-    });
   }
 
   // REPLACES _syncContacts
@@ -118,7 +110,7 @@ class _FriendsViewState extends State<FriendsView>
         "Connected!",
         "Friend accepted. You can now detect their photos!",
       );
-      _fetchRequests(); // Refresh
+      // _fetchRequests(); // Refresh not needed with Stream
     } catch (e) {
       Get.snackbar("Error", "Accept failed: $e");
     } finally {
@@ -144,8 +136,8 @@ class _FriendsViewState extends State<FriendsView>
         controller: _tabController,
         children: [
           // Tab 0: Connections (Confirmed)
-          FutureBuilder<List<Map<String, dynamic>>>(
-            future: _friendService.getConfirmedFriends(),
+          StreamBuilder<List<Map<String, dynamic>>>(
+            stream: _friendService.getFriendsStream(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Center(child: CircularProgressIndicator());
@@ -175,7 +167,7 @@ class _FriendsViewState extends State<FriendsView>
             },
           ),
 
-          // Tab 1: Find Friends (Face Search)
+          // Tab 1: Find Friends (Face Search) - Mixed Manual & Continuous
           Column(
             children: [
               Padding(
@@ -188,6 +180,7 @@ class _FriendsViewState extends State<FriendsView>
                       style: TextStyle(color: Colors.grey),
                     ),
                     const SizedBox(height: 10),
+                    // Manual Trigger still useful for force-refresh or UX
                     ElevatedButton.icon(
                       onPressed: _isLoading ? null : _scanGalleryForFriends,
                       icon: const Icon(Icons.face_retouching_natural),
@@ -206,56 +199,106 @@ class _FriendsViewState extends State<FriendsView>
               ),
               const Divider(),
               Expanded(
-                child: _isLoading && _foundFriends.isEmpty
-                    ? const Center(child: CircularProgressIndicator())
-                    : ListView.builder(
-                        itemCount: _foundFriends.length,
-                        itemBuilder: (context, index) {
-                          final match = _foundFriends[index];
-                          final user = match['user'];
-                          final cluster =
-                              match['cluster']; // The local cluster that matched
+                child: StreamBuilder<List<Map<String, dynamic>>>(
+                  stream: widget.clusters.isNotEmpty
+                      ? _friendService.findFriendsStream(widget.clusters)
+                      : Stream.value([]),
+                  builder: (context, snapshot) {
+                    final manualMatches = _foundFriends;
+                    final streamMatches = snapshot.data ?? [];
 
-                          return ListTile(
-                            leading: const CircleAvatar(
-                              child: Icon(Icons.person),
-                              // Future: Show side-by-side (Cluster Face vs User Face?)
+                    // Merege deduplicated if needed, or just prefer stream if available.
+                    // For logic simplicity: Show Stream matches if present, else manual.
+                    // Actually, stream will fire immediately with current state.
+                    // Combining them for best UX:
+
+                    final allMatches = [...manualMatches];
+                    // Add stream matches if not already present
+                    for (var m in streamMatches) {
+                      // Checking by user uid to avoid dupes
+                      bool exists = allMatches.any(
+                        (existing) =>
+                            existing['user']['uid'] == m['user']['uid'],
+                      );
+                      if (!exists) allMatches.add(m);
+                    }
+
+                    if (_isLoading && allMatches.isEmpty) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    if (allMatches.isEmpty) {
+                      // Only show empty state if stream has emitted at least once or we are not loading manual
+                      if (snapshot.hasData || !_isLoading) {
+                        return const Center(
+                          child: Text(
+                            "No matches found yet. Waiting for friends...",
+                          ),
+                        );
+                      }
+                      return const Center(child: CircularProgressIndicator());
+                    }
+
+                    return ListView.builder(
+                      itemCount: allMatches.length,
+                      itemBuilder: (context, index) {
+                        final match = allMatches[index];
+                        final user = match['user'];
+                        final cluster = match['cluster'];
+
+                        return ListTile(
+                          leading: const CircleAvatar(
+                            child: Icon(Icons.person),
+                          ),
+                          title: Text(user['phone'] ?? "Unknown"),
+                          subtitle: Text(
+                            "Matched with ${cluster.label ?? 'Unknown Person'}",
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(
+                              Icons.person_add,
+                              color: Colors.blue,
                             ),
-                            title: Text(user['phone'] ?? "Unknown"),
-                            subtitle: Text(
-                              "Matched with ${cluster.label ?? 'Unknown Person'}",
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(
-                                Icons.person_add,
-                                color: Colors.blue,
-                              ),
-                              onPressed: () => _addFriend(match),
-                            ),
-                          );
-                        },
-                      ),
+                            onPressed: () => _addFriend(match),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
             ],
           ),
 
           // Tab 2: Requests
-          _incomingRequests.isEmpty
-              ? const Center(child: Text("No Pending Requests"))
-              : ListView.builder(
-                  itemCount: _incomingRequests.length,
-                  itemBuilder: (context, index) {
-                    final req = _incomingRequests[index];
-                    return ListTile(
-                      title: const Text("New Friend Request"),
-                      subtitle: Text("From: ${req['userA']}"),
-                      trailing: ElevatedButton(
-                        child: const Text("Accept"),
-                        onPressed: () => _acceptRequest(req),
-                      ),
-                    );
-                  },
-                ),
+          StreamBuilder<List<Map<String, dynamic>>>(
+            stream: _friendService.getIncomingRequestsStream(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final requests = snapshot.data ?? [];
+
+              if (requests.isEmpty) {
+                return const Center(child: Text("No Pending Requests"));
+              }
+
+              return ListView.builder(
+                itemCount: requests.length,
+                itemBuilder: (context, index) {
+                  final req = requests[index];
+                  return ListTile(
+                    title: const Text("New Friend Request"),
+                    subtitle: Text("From: ${req['userA']}"),
+                    trailing: ElevatedButton(
+                      child: const Text("Accept"),
+                      onPressed: () => _acceptRequest(req),
+                    ),
+                  );
+                },
+              );
+            },
+          ),
         ],
       ),
     );
