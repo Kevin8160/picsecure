@@ -1,8 +1,7 @@
-import 'dart:io';
 import 'package:image/image.dart' as img; // Added for compression
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:picsecure/services/face_clustering_service.dart';
-import 'dart:convert'; // For base64
+// For base64
 import 'package:photo_manager/photo_manager.dart'; // For AssetEntity
 import 'package:picsecure/services/auth_service.dart';
 import 'package:picsecure/services/encryption_service.dart'; // Added

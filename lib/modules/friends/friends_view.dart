@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:picsecure/services/friend_service.dart';
-import 'package:picsecure/services/face_clustering_service.dart'; // Import for type if needed, or dynamic
+// Import for type if needed, or dynamic
 
 class FriendsView extends StatefulWidget {
   final List<dynamic>

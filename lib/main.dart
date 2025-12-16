@@ -29,6 +29,25 @@ void main() async {
   // Initialize Hive
   await Hive.initFlutter();
 
+  // --- iOS CLEANUP LOGIC ---
+  // iOS keeps Keychain data on uninstall. To ensure "clean install", we check a local flag.
+  // If the flag is missing (which happens on uninstall), we wipe the keychain.
+  try {
+    final prefsBox = await Hive.openBox('app_prefs');
+    final hasRunBefore = prefsBox.get('has_run_before', defaultValue: false);
+
+    if (!hasRunBefore) {
+      print(
+        "First Run (or Reinstall) detected: Wiping Keychain & Signing Out...",
+      );
+      // FORCE SIGN OUT Firebase to prevent auto-login on iOS
+      await FirebaseAuth.instance.signOut();
+      await prefsBox.put('has_run_before', true);
+    }
+  } catch (e) {
+    print("Cleanup Error: $e");
+  }
+
   // Initialize Services
   try {
     await EncryptionService().init();

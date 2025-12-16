@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img; // Need 'image' package for processing
 import 'package:google_mlkit_face_detection/google_mlkit_face_detection.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -17,8 +18,13 @@ class FaceMLService {
   final FaceDetector _faceDetector = FaceDetector(
     options: FaceDetectorOptions(
       performanceMode: FaceDetectorMode.accurate,
-      enableContours: true,
-      enableLandmarks: true,
+      minFaceSize:
+          0.15, // Default is 0.1, increasing slightly to avoid false positives, or keep 0.1?
+      // Actually for "detected no face" issue, we want MORE sensitivity, so lower size?
+      // But selfie face is big. The issue is likely something else.
+      // Let's just remove the extra processing to be safe.
+      // enableContours: true, // Removed for robustness/speed
+      // enableLandmarks: true, // Removed
     ),
   );
 
@@ -50,11 +56,30 @@ class FaceMLService {
   }
 
   /// Detects face in an image file and returns the Face object (MLKit)
-  Future<Face?> detect(File imageFile) async {
-    final faces = await detectAll(imageFile);
+  Future<Face?> detect(File imageFile, {bool fixRotation = false}) async {
+    File fileToProcess = imageFile;
+
+    if (fixRotation) {
+      try {
+        final fixedPath = await compute(fixImageOrientation, imageFile.path);
+        fileToProcess = File(fixedPath);
+      } catch (e) {
+        print("Rotation fix failed, using original: $e");
+      }
+    }
+
+    var faces = await detectAll(fileToProcess);
+
+    // Retry with rotation even if not explicitly requested if we find 0 faces?
+    // No, keep it explicit to avoid scanning perf hit.
+
     if (faces.isNotEmpty) {
       return faces.first; // Process the primary face
+    } else if (!fixRotation) {
+      // Optional: Auto-retry if fixRotation was false initially?
+      // Let's rely on the caller passing true.
     }
+
     return null;
   }
 
@@ -69,38 +94,36 @@ class FaceMLService {
     if (!_isModelLoaded) await init();
     if (_interpreter == null) throw Exception("Interpreter not initialized");
 
-    // 1. Load image
-
+    // 1. Read bytes (Main thread I/O is fine, but decoding should be offloaded)
     final bytes = await imageFile.readAsBytes();
-    final image = img.decodeImage(bytes);
-    if (image == null) throw Exception("Could not decode image");
 
-    // 2. Crop Face
-    // Bounding box from MLKit
-    final x = face.boundingBox.left.toInt();
-    final y = face.boundingBox.top.toInt();
-    final w = face.boundingBox.width.toInt();
-    final h = face.boundingBox.height.toInt();
+    // 2. Offload Decoding, Cropping, Resizing, Normalization to Isolate
+    // Pass necessary data: bytes + bounding box
+    final processingData = ImageProcessingData(
+      imageBytes: bytes,
+      x: face.boundingBox.left.toInt(),
+      y: face.boundingBox.top.toInt(),
+      w: face.boundingBox.width.toInt(),
+      h: face.boundingBox.height.toInt(),
+    );
 
-    // Ensure crop is within bounds
-    final cropped = img.copyCrop(image, x: x, y: y, width: w, height: h);
+    try {
+      final List input = await compute(processImageForTracking, processingData);
 
-    // 3. Resize to 112x112
-    final resized = img.copyResize(cropped, width: 112, height: 112);
+      // 3. Run Inference (Interpreter run must happen on the same thread it was created, usually main or its own isolate if structured that way.
+      // TFLite Flutter interpreter is often thread-bound. For now, we run inference on main, but the heavy image op is gone.)
+      // Output expects [2, 192]
+      var outputBuffer = List.filled(2 * 192, 0.0).reshape([2, 192]);
 
-    // 4. Preprocess (Float32 Normalized) -> Create Batch of 2
-    // Model expects [2, 112, 112, 3]
-    List input = _imageToFloat32ListBatch2(resized);
+      _interpreter!.run(input, outputBuffer);
 
-    // 5. Run Inference
-    // Output expects [2, 192]
-    var outputBuffer = List.filled(2 * 192, 0.0).reshape([2, 192]);
-
-    _interpreter!.run(input, outputBuffer);
-
-    // Return the first embedding (ignore the duplicate)
-    List<double> rawEmbedding = List<double>.from(outputBuffer[0]);
-    return normalize(rawEmbedding);
+      // Return the first embedding
+      List<double> rawEmbedding = List<double>.from(outputBuffer[0]);
+      return normalize(rawEmbedding);
+    } catch (e) {
+      print("Error in isolate processing: $e");
+      rethrow;
+    }
   }
 
   /// L2 Normalization (Public for use in Matching Service)
@@ -112,38 +135,6 @@ class FaceMLService {
     double norm = sqrt(sum);
     if (norm == 0) return embedding; // precise zero check
     return embedding.map((x) => x / norm).toList();
-  }
-
-  /// Helper to convert Image to Float32 List [2, 112, 112, 3] (Doubled)
-  List _imageToFloat32ListBatch2(img.Image image) {
-    // 1 image = 112*112*3 = 37632 float values
-    var singleImageTotal = 112 * 112 * 3;
-    var convertedBytes = Float32List(2 * singleImageTotal); // Batch 2
-    var buffer = Float32List.view(convertedBytes.buffer);
-
-    int pixelIndex = 0;
-
-    // Fill first image
-    for (var i = 0; i < 112; i++) {
-      for (var j = 0; j < 112; j++) {
-        var pixel = image.getPixel(j, i);
-        // Normalize -1..1
-        var r = (pixel.r - 128) / 128;
-        var g = (pixel.g - 128) / 128;
-        var b = (pixel.b - 128) / 128;
-
-        buffer[pixelIndex++] = r;
-        buffer[pixelIndex++] = g;
-        buffer[pixelIndex++] = b;
-      }
-    }
-
-    // Copy first image to second slot
-    for (int i = 0; i < singleImageTotal; i++) {
-      buffer[pixelIndex++] = buffer[i];
-    }
-
-    return convertedBytes.reshape([2, 112, 112, 3]);
   }
 
   /// Helper to convert Image to Uint8 List (0..255)
@@ -175,4 +166,101 @@ class FaceMLService {
     _faceDetector.close();
     _interpreter?.close();
   }
+}
+
+/// Data class to pass to Isolate
+class ImageProcessingData {
+  final Uint8List imageBytes;
+  final int x;
+  final int y;
+  final int w;
+  final int h;
+
+  ImageProcessingData({
+    required this.imageBytes,
+    required this.x,
+    required this.y,
+    required this.w,
+    required this.h,
+  });
+}
+
+/// Top-level function for Compute Isolate
+/// Returns the Float32List input ready for TFLite
+List processImageForTracking(ImageProcessingData data) {
+  // 1. Decode
+  final image = img.decodeImage(data.imageBytes);
+  if (image == null) throw Exception("Could not decode image in isolate");
+
+  // 2. Crop
+  // Ensure crop is within bounds
+  // Note: img handles out of bounds partially, but safe to clamp logic if needed.
+  final cropped = img.copyCrop(
+    image,
+    x: data.x,
+    y: data.y,
+    width: data.w,
+    height: data.h,
+  );
+
+  // 3. Resize
+  final resized = img.copyResize(cropped, width: 112, height: 112);
+
+  // 4. Convert to Float32 Batch [2, 112, 112, 3]
+  return _imageToFloat32ListBatch2(resized);
+}
+
+/// Helper to convert Image to Float32 List [2, 112, 112, 3] (Doubled)
+/// Copied here to be accessible by top-level function
+List _imageToFloat32ListBatch2(img.Image image) {
+  // 1 image = 112*112*3 = 37632 float values
+  var singleImageTotal = 112 * 112 * 3;
+  var convertedBytes = Float32List(2 * singleImageTotal); // Batch 2
+  var buffer = Float32List.view(convertedBytes.buffer);
+
+  int pixelIndex = 0;
+
+  // Fill first image
+  for (var i = 0; i < 112; i++) {
+    for (var j = 0; j < 112; j++) {
+      var pixel = image.getPixel(j, i);
+      // Normalize -1..1
+      var r = (pixel.r - 128) / 128;
+      var g = (pixel.g - 128) / 128;
+      var b = (pixel.b - 128) / 128;
+
+      buffer[pixelIndex++] = r;
+      buffer[pixelIndex++] = g;
+      buffer[pixelIndex++] = b;
+    }
+  }
+
+  // Copy first image to second slot
+  for (int i = 0; i < singleImageTotal; i++) {
+    buffer[pixelIndex++] = buffer[i];
+  }
+
+  return convertedBytes.reshape([2, 112, 112, 3]);
+}
+
+/// Top-level function to fix image orientation by decoding and re-encoding
+Future<String> fixImageOrientation(String path) async {
+  final file = File(path);
+  final bytes = await file.readAsBytes();
+
+  // decodeImage will bake the EXIF orientation into the pixel data
+  final image = img.decodeImage(bytes);
+
+  if (image == null) throw Exception("Could not decode image for rotation fix");
+
+  // Re-encode to JPG (removes EXIF orientation tag, pixels are now upright)
+  final fixedBytes = img.encodeJpg(image);
+
+  // Write to temp file
+  final tempDir = Directory.systemTemp;
+  final newPath = '${path}_fixed.jpg'; // Naive temp path
+  final newFile = File(newPath);
+  await newFile.writeAsBytes(fixedBytes);
+
+  return newPath;
 }

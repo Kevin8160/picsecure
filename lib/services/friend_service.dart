@@ -131,8 +131,9 @@ class FriendService {
     final userDoc = await _firestore.collection('users').doc(user.uid).get();
     final myEncryptedEmbeddingStr = userDoc.data()?['encryptedFaceEmbedding'];
 
-    if (myEncryptedEmbeddingStr == null)
+    if (myEncryptedEmbeddingStr == null) {
       throw Exception("My Face Setup not complete");
+    }
 
     // B. Decrypt it
     List<double> myEmbedding;

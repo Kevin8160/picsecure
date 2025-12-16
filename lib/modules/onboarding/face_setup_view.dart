@@ -45,7 +45,8 @@ class _FaceSetupViewState extends State<FaceSetupView> {
 
     try {
       // 1. Detect Face
-      final face = await _faceMLService.detect(_imageFile!);
+      // Enable rotation fix for selfies (especially iOS)
+      final face = await _faceMLService.detect(_imageFile!, fixRotation: true);
       if (face == null) {
         setState(() {
           _statusMessage = "No face detected. Please try again.";

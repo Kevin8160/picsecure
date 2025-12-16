@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:image/image.dart' as img;
 
@@ -24,7 +23,6 @@ class _SuggestionsViewState extends State<SuggestionsView> {
   final HomeController _controller = Get.put(HomeController());
   final GalleryService _galleryService = GalleryService();
   Box<ScannedPhoto>? _box;
-  List<FaceCluster> _currentClusters = [];
 
   @override
   void initState() {
@@ -33,14 +31,12 @@ class _SuggestionsViewState extends State<SuggestionsView> {
   }
 
   Future<void> _initBox() async {
-    // Ensure box is open (Handled by main/controller, but safe check)
+    // Keep this just for "All Photos" grid direct binding if we want,
+    // OR migrate "All Photos" to controller too.
+    // For now, "All Photos" can stay efficient with ValueListenable specific to the box,
+    // but mixing Obx (Clusters) and ValueListenable (Grid) is fine.
+    await _galleryService.init();
     if (Hive.isBoxOpen('scanned_photos')) {
-      setState(() {
-        _box = Hive.box<ScannedPhoto>('scanned_photos');
-      });
-    } else {
-      // Fallback if main init failed?
-      await _galleryService.init();
       setState(() {
         _box = Hive.box<ScannedPhoto>('scanned_photos');
       });
@@ -64,7 +60,8 @@ class _SuggestionsViewState extends State<SuggestionsView> {
             IconButton(
               onPressed: () {
                 // Navigate to Friends
-                Get.to(() => FriendsView(clusters: _currentClusters));
+                // We can pass clusters from controller
+                Get.to(() => FriendsView(clusters: _controller.clusters));
               },
               icon: const Icon(Icons.people),
             ),
@@ -120,113 +117,127 @@ class _SuggestionsViewState extends State<SuggestionsView> {
                 Expanded(
                   child: _box == null
                       ? const Center(child: CircularProgressIndicator())
-                      : ValueListenableBuilder(
-                          valueListenable: _box!.listenable(),
-                          builder: (context, Box<ScannedPhoto> box, _) {
-                            final photos = box.values.toList();
-                            if (photos.isEmpty) {
-                              return const Center(
-                                child: Text("No photos found yet. Scanning..."),
-                              );
-                            }
-                            // Run Clustering
-                            final clusters = FaceClusteringService()
-                                .clusterFaces(photos);
-                            _currentClusters = clusters;
-
-                            return CustomScrollView(
-                              slivers: [
-                                // 1. People Section
-                                if (clusters.isNotEmpty) ...[
-                                  const SliverToBoxAdapter(
-                                    child: Padding(
-                                      padding: EdgeInsets.all(16.0),
-                                      child: Text(
-                                        "People & Friends",
-                                        style: TextStyle(
-                                          fontSize: 18,
-                                          fontWeight: FontWeight.bold,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  SliverToBoxAdapter(
-                                    child: SizedBox(
-                                      height: 120,
-                                      child: ListView.builder(
-                                        scrollDirection: Axis.horizontal,
-                                        itemCount: clusters.length,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                        ),
-                                        itemBuilder: (context, index) {
-                                          final cluster = clusters[index];
-                                          return GestureDetector(
-                                            onTap: () => Get.to(
-                                              () => PersonDetailView(
-                                                cluster: cluster,
-                                              ),
-                                            ),
-                                            child: Container(
-                                              margin: const EdgeInsets.only(
-                                                right: 16,
-                                              ),
-                                              child: Column(
-                                                children: [
-                                                  FutureBuilder<Uint8List?>(
-                                                    future: _getFaceCrop(
-                                                      cluster,
-                                                    ),
-                                                    builder: (context, snapshot) {
-                                                      if (!snapshot.hasData ||
-                                                          snapshot.data ==
-                                                              null) {
-                                                        return const CircleAvatar(
-                                                          radius: 40,
-                                                          backgroundColor:
-                                                              Colors.grey,
-                                                        );
-                                                      }
-                                                      return CircleAvatar(
-                                                        radius: 40,
-                                                        backgroundImage:
-                                                            MemoryImage(
-                                                              snapshot.data!,
-                                                            ),
-                                                      );
-                                                    },
-                                                  ),
-                                                  const SizedBox(height: 8),
-                                                  Text(
-                                                    cluster.label ??
-                                                        "Person ${index + 1}",
-                                                    style: const TextStyle(
-                                                      fontSize: 12,
-                                                    ),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                                // 2. All Photos Section
-                                const SliverToBoxAdapter(
-                                  child: Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: Text(
-                                      "All Photos",
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
+                      : CustomScrollView(
+                          slivers: [
+                            // 1. People Section (Reactive from Controller)
+                            const SliverToBoxAdapter(
+                              child: Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text(
+                                  "People & Friends",
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
                                   ),
                                 ),
-                                SliverGrid(
+                              ),
+                            ),
+                            SliverToBoxAdapter(
+                              child: Obx(() {
+                                if (_controller.isLoadingClusters.value) {
+                                  return const SizedBox(
+                                    height: 120,
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  );
+                                }
+                                final clusters = _controller.clusters;
+                                if (clusters.isEmpty) {
+                                  return const Padding(
+                                    padding: EdgeInsets.symmetric(
+                                      horizontal: 16.0,
+                                    ),
+                                    child: Text(
+                                      "No people found yet. Keep scanning!",
+                                    ),
+                                  );
+                                }
+                                return SizedBox(
+                                  height: 120,
+                                  child: ListView.builder(
+                                    scrollDirection: Axis.horizontal,
+                                    itemCount: clusters.length,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 16,
+                                    ),
+                                    itemBuilder: (context, index) {
+                                      final cluster = clusters[index];
+                                      return GestureDetector(
+                                        onTap: () => Get.to(
+                                          () => PersonDetailView(
+                                            cluster: cluster,
+                                          ),
+                                        ),
+                                        child: Container(
+                                          margin: const EdgeInsets.only(
+                                            right: 16,
+                                          ),
+                                          child: Column(
+                                            children: [
+                                              FutureBuilder<Uint8List?>(
+                                                future: _getFaceCrop(cluster),
+                                                builder: (context, snapshot) {
+                                                  if (!snapshot.hasData ||
+                                                      snapshot.data == null) {
+                                                    return const CircleAvatar(
+                                                      radius: 40,
+                                                      backgroundColor:
+                                                          Colors.grey,
+                                                    );
+                                                  }
+                                                  return CircleAvatar(
+                                                    radius: 40,
+                                                    backgroundImage:
+                                                        MemoryImage(
+                                                          snapshot.data!,
+                                                        ),
+                                                  );
+                                                },
+                                              ),
+                                              const SizedBox(height: 8),
+                                              Text(
+                                                cluster.label ??
+                                                    "Person ${index + 1}",
+                                                style: const TextStyle(
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                );
+                              }),
+                            ),
+
+                            // 2. All Photos Section (Still using Box Listener for efficient grid updates)
+                            const SliverToBoxAdapter(
+                              child: Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text(
+                                  "All Photos",
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            ValueListenableBuilder(
+                              valueListenable: _box!.listenable(),
+                              builder: (context, Box<ScannedPhoto> box, _) {
+                                final photos = box.values.toList();
+                                if (photos.isEmpty) {
+                                  return const SliverToBoxAdapter(
+                                    child: Center(
+                                      child: Text("No photos found yet."),
+                                    ),
+                                  );
+                                }
+                                return SliverGrid(
                                   delegate: SliverChildBuilderDelegate((
                                     context,
                                     index,
@@ -240,10 +251,10 @@ class _SuggestionsViewState extends State<SuggestionsView> {
                                         crossAxisSpacing: 4,
                                         mainAxisSpacing: 4,
                                       ),
-                                ),
-                              ],
-                            );
-                          },
+                                );
+                              },
+                            ),
+                          ],
                         ),
                 ),
               ],

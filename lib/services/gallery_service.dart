@@ -65,10 +65,17 @@ class GalleryService {
       StreamController<String>.broadcast();
   Stream<String> get scanStatus => _scanStatusController.stream;
 
+  Stream<BoxEvent>? get watchGallery => _box?.watch();
+
+  // Expose box for direct access if needed (or better, keep encapsulated)
+  List<ScannedPhoto> get photos =>
+      _box?.values.toList().cast<ScannedPhoto>() ?? [];
+
   Future<void> init() async {
     // Register Adapters
-    if (!Hive.isAdapterRegistered(0))
+    if (!Hive.isAdapterRegistered(0)) {
       Hive.registerAdapter(ScannedPhotoAdapter());
+    }
     if (!Hive.isAdapterRegistered(1)) Hive.registerAdapter(FaceObjectAdapter());
 
     final key = await _encryptionService.getHiveKey();
@@ -91,9 +98,6 @@ class GalleryService {
               // If the data is List<double>, this access might succeed strictly speaking
               // but the type check face is FaceObject will eventually fail or the loop helper will fail.
               // explicitly checking runtime type usually works best to force the check.
-              if (face is! FaceObject) {
-                throw TypeError();
-              }
             }
           }
         }

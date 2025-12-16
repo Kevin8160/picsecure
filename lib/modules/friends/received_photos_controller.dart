@@ -126,7 +126,7 @@ class ReceivedPhotosController extends GetxController {
 
       // 2. Save to Local File
       final directory = await getApplicationDocumentsDirectory();
-      final String filePath = '${directory.path}/received_${messageId}.jpg';
+      final String filePath = '${directory.path}/received_$messageId.jpg';
       final file = File(filePath);
       await file.writeAsBytes(decryptedBytes);
 
